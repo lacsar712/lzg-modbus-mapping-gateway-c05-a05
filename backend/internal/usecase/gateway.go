@@ -36,15 +36,7 @@ func (s *GatewayService) Reload() error {
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid mapping: %w", err)
 	}
-	// normalize timeout
-	for i := range cfg.Devices {
-		if cfg.Devices[i].TimeoutMs <= 0 {
-			cfg.Devices[i].TimeoutMs = 2000
-		}
-		for j := range cfg.Devices[i].Points {
-			cfg.Devices[i].Points[j] = cfg.Devices[i].Points[j].Normalize()
-		}
-	}
+	normalizeConfig(&cfg)
 	s.mu.Lock()
 	s.cfg = cfg
 	s.yamlText = text
@@ -53,28 +45,16 @@ func (s *GatewayService) Reload() error {
 }
 
 func (s *GatewayService) ReloadFromText(text string) error {
-	// try parse+validate without destroying current cfg on failure
-	tmpStore := &memStore{text: text}
-	cfg, _, err := tmpStore.Load()
-	if err != nil {
+	// Parse + validate + normalize against a throwaway copy first, so that any
+	// failure leaves both the active config and the stored file untouched.
+	if _, err := s.parseCandidate(text); err != nil {
 		return err
-	}
-	if err := cfg.Validate(); err != nil {
-		return fmt.Errorf("invalid mapping: %w", err)
 	}
 	if err := s.store.Save(text); err != nil {
 		return err
 	}
 	return s.Reload()
 }
-
-type memStore struct{ text string }
-
-func (m *memStore) Load() (domain.MappingConfig, string, error) {
-	return parseYAML(m.text)
-}
-func (m *memStore) Save(string) error { return nil }
-func (m *memStore) Path() string      { return "memory" }
 
 func (s *GatewayService) Config() domain.MappingConfig {
 	s.mu.RLock()

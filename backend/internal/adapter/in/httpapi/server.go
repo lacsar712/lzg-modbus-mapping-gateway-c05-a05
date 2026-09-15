@@ -41,6 +41,8 @@ func (s *Server) Router() *gin.Engine {
 		auth.PUT("/devices/:id/points/:name", s.writePoint)
 		auth.GET("/devices/:id/snapshot", s.snapshot)
 		auth.GET("/mapping", s.getMapping)
+		auth.POST("/mapping/preview", s.previewMapping)
+		auth.POST("/mapping/dry-run", s.dryRunMapping)
 		auth.POST("/reload", s.reload)
 	}
 	return r
@@ -184,6 +186,68 @@ func (s *Server) snapshot(c *gin.Context) {
 
 func (s *Server) getMapping(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"yaml": s.svc.YAMLText()})
+}
+
+// candidateYAML binds the candidate body and rejects empty payloads.
+func candidateYAML(c *gin.Context) (string, bool) {
+	var req struct {
+		YAML string `json:"yaml"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body, expect {yaml}"})
+		return "", false
+	}
+	if strings.TrimSpace(req.YAML) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "yaml must not be empty"})
+		return "", false
+	}
+	return req.YAML, true
+}
+
+// previewMapping returns the structured diff between the active config and the
+// candidate. The candidate is never saved; an invalid candidate yields 400 and
+// the active config is returned untouched.
+func (s *Server) previewMapping(c *gin.Context) {
+	if !s.requireEngineer(c) {
+		return
+	}
+	text, ok := candidateYAML(c)
+	if !ok {
+		return
+	}
+	diff, err := s.svc.Preview(text)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   err.Error(),
+			"keptOld": true,
+			"yaml":    s.svc.YAMLText(),
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "diff": diff})
+}
+
+// dryRunMapping validates a candidate without applying it and reports the
+// merged modbus read windows it would produce.
+func (s *Server) dryRunMapping(c *gin.Context) {
+	if !s.requireEngineer(c) {
+		return
+	}
+	text, ok := candidateYAML(c)
+	if !ok {
+		return
+	}
+	report, err := s.svc.DryRun(text)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   err.Error(),
+			"keptOld": true,
+			"report":  report,
+			"yaml":    s.svc.YAMLText(),
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "report": report})
 }
 
 func (s *Server) reload(c *gin.Context) {
